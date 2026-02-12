@@ -1,9 +1,10 @@
 # (c) 2005 Ian Bicking and contributors; written for Paste (http://pythonpaste.org)
 # Licensed under the MIT license: http://www.opensource.org/licenses/mit-license.php
 import os
-import pkg_resources
+from importlib.resources import files
 from paste.script import pluginlib, copydir
 from paste.script.command import BadCommand
+from six.moves import input
 difflib = None
 import subprocess
 
@@ -104,8 +105,11 @@ class FileOp(object):
         if not os.path.exists(blank):
             if self.use_pkg_resources:
                 fullpath = '/'.join([self.source_dir[1], template])
-                content = pkg_resources.resource_string(
-                    self.source_dir[0], fullpath)
+                # Use importlib.resources to load package resources
+                resource = files(self.source_dir[0])
+                for part in fullpath.split('/'):
+                    resource = resource / part
+                content = resource.read_text(encoding='utf-8')
                 read_content = False
                 blank = fullpath
             else:

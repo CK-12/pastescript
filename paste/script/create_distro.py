@@ -1,3 +1,4 @@
+from __future__ import print_function
 # (c) 2005 Ian Bicking and contributors; written for Paste (http://pythonpaste.org)
 # Licensed under the MIT license: http://www.opensource.org/licenses/mit-license.php
 import fnmatch
@@ -5,7 +6,7 @@ import os
 import re
 import sys
 
-import pkg_resources
+from importlib.metadata import distribution, entry_points, PackageNotFoundError
 
 from . import copydir
 from . import pluginlib
@@ -262,9 +263,18 @@ class CreateDistroCommand(Command):
                 raise LookupError(
                     'Template by name %r not found' % tmpl_name)
         else:
-            dist = pkg_resources.get_distribution(dist_name)
-            entry = dist.get_entry_info(
-                'paste.paster_create_template', tmpl_name)
+            dist = distribution(dist_name)
+            # Find the entry point in the distribution
+            eps = entry_points(group='paste.paster_create_template')
+            entry = None
+            for ep in eps:
+                if ep.name == tmpl_name:
+                    entry = ep
+                    break
+            if entry is None:
+                raise LookupError(
+                    'Template by name %r not found in distribution %r'
+                    % (tmpl_name, dist_name))
             tmpl = entry.load()(entry.name)
         full_name = '%s#%s' % (dist_name, tmpl_name)
         for item_full_name, item_tmpl in templates:
@@ -277,8 +287,8 @@ class CreateDistroCommand(Command):
 
     def all_entry_points(self):
         if not hasattr(self, '_entry_points'):
-            self._entry_points = list(pkg_resources.iter_entry_points(
-            'paste.paster_create_template'))
+            self._entry_points = list(entry_points(
+                group='paste.paster_create_template'))
         return self._entry_points
 
     def display_vars(self, vars):

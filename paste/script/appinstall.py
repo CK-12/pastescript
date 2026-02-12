@@ -4,8 +4,11 @@
 Provides the two commands for preparing an application:
 ``prepare-app`` and ``setup-app``
 """
+from __future__ import print_function
+
 import types
 import os
+import six
 import string
 import uuid
 from paste.deploy import appconfig
@@ -13,8 +16,9 @@ from paste.script import copydir
 from paste.script.command import Command, BadCommand, run as run_command
 from paste.script.util import secret
 from paste.util import import_string
+from six.moves import filter
 import paste.script.templates
-import pkg_resources
+from importlib.metadata import distribution, PackageNotFoundError, entry_points
 
 Cheetah = None
 
@@ -116,7 +120,7 @@ class AbstractInstallCommand(Command):
                     else:
                         continue
                 globs = {}
-                exec(compile(open(name).read(), name, 'exec'), globs)
+                six.exec_(compile(open(name).read(), name, 'exec'), globs)
                 mod = types.ModuleType('__sysconfig_%i__' % index)
                 for name, value in globs.items():
                     setattr(mod, name, value)
@@ -197,12 +201,12 @@ class AbstractInstallCommand(Command):
         if required.
         """
         try:
-            dist = pkg_resources.get_distribution(req)
+            dist = distribution(req)
             if self.verbose:
                 print('Distribution already installed:')
-                print(' ', dist, 'from', dist.location)
+                print(' ', dist.name, 'from', dist._path if hasattr(dist, '_path') else 'unknown')
             return dist
-        except pkg_resources.DistributionNotFound:
+        except PackageNotFoundError:
             if self.options.no_install:
                 print("Because --no-install was given, we won't try to install the package %s" % req)
                 raise
@@ -221,21 +225,20 @@ class AbstractInstallCommand(Command):
             from setuptools import setup
             setup(script_args=['-q', 'easy_install']
                   + options + [req])
-            return pkg_resources.get_distribution(req)
+            return distribution(req)
 
     def get_installer(self, distro, ep_group, ep_name):
-        if hasattr(distro, 'load_entry_point'):
-            # pkg_resources.EggInfoDistribution
-            installer_class = distro.load_entry_point(
-                'paste.app_install', ep_name)
-        else:
-            # importlib.metadata.PathDistribution
-            eps = [ep for ep in distro.entry_points
-                   if ep.group == 'paste.app_install' and ep.name == ep_name]
-            installer_class = eps[0].load()
-        installer = installer_class(
-            distro, ep_group, ep_name)
-        return installer
+        # Load entry point using importlib.metadata
+        eps = entry_points()
+        group = eps.select(group='paste.app_install')
+        for ep in group:
+            if ep.name == ep_name:
+                installer_class = ep.load()
+                installer = installer_class(
+                    distro, ep_group, ep_name)
+                return installer
+        raise BadCommand(
+            'Entry point %s not found in group paste.app_install' % ep_name)
 
 
 class MakeConfigCommand(AbstractInstallCommand):
@@ -342,7 +345,7 @@ class MakeConfigCommand(AbstractInstallCommand):
                 self.run_setup(setup_config)
         else:
             filenames = self.installer.editable_config_files(self.config_file)
-            assert not isinstance(filenames, str), (
+            assert not isinstance(filenames, six.string_types), (
                 "editable_config_files returned a string, not a list")
             if not filenames and filenames is not None:
                 print('No config files need editing')
@@ -579,15 +582,9 @@ class Installer(object):
         the extra attributes ``global_conf``, ``local_conf`` and
         ``filename``
         """
-        if hasattr(self.dist, 'get_metadata_lines'):
-            # pkg_resources.EggInfoDistribution
-            lines = self.dist.get_metadata_lines('top_level.txt')
-        else:
-            # importlib.metadata.PathDistribution
-            lines = self.dist.read_text('top_level.txt').splitlines()
         modules = [
             line.strip()
-            for line in lines
+            for line in self.dist.get_metadata_lines('top_level.txt')
             if line.strip() and not line.strip().startswith('#')]
         if not modules:
             print('No modules are listed in top_level.txt')

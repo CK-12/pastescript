@@ -1,7 +1,9 @@
+from __future__ import print_function
 # (c) 2005 Ian Bicking and contributors; written for Paste (http://pythonpaste.org)
 # Licensed under the MIT license: http://www.opensource.org/licenses/mit-license.php
 import os
-import pkg_resources
+import re
+from importlib.metadata import distribution, entry_points, PackageNotFoundError
 
 def add_plugin(egg_info_dir, plugin_name):
     """
@@ -79,8 +81,8 @@ def resolve_plugins(plugin_list):
     while plugin_list:
         plugin = plugin_list.pop()
         try:
-            pkg_resources.require(plugin)
-        except pkg_resources.DistributionNotFound as e:
+            dist = distribution(plugin)
+        except PackageNotFoundError as e:
             msg = '%sNot Found%s: %s (did you run python setup.py develop?)'
             if str(e) != plugin:
                 e.args = (msg % (str(e) + ': ', ' for', plugin)),
@@ -88,22 +90,33 @@ def resolve_plugins(plugin_list):
                 e.args = (msg % ('', '', plugin)),
             raise
         found.append(plugin)
-        dist = get_distro(plugin)
-        if dist.has_metadata('paster_plugins.txt'):
-            data = dist.get_metadata('paster_plugins.txt')
-            for add_plugin in parse_lines(data):
-                if add_plugin not in found:
-                    plugin_list.append(add_plugin)
+        if dist.metadata.get('Metadata-Version'):
+            try:
+                data = dist.read_text('paster_plugins.txt')
+                if data:
+                    for add_plugin in parse_lines(data):
+                        if add_plugin not in found:
+                            plugin_list.append(add_plugin)
+            except (FileNotFoundError, KeyError):
+                pass
     return list(map(get_distro, found))
 
 def get_distro(spec):
-    return pkg_resources.get_distribution(spec)
+    return distribution(spec)
 
 def load_commands_from_plugins(plugins):
     commands = {}
-    for plugin in plugins:
-        commands.update(pkg_resources.get_entry_map(
-            plugin, group='paste.paster_command'))
+    for dist in plugins:
+        # dist is already a Distribution object from resolve_plugins()
+        try:
+            # Get entry points from this specific distribution's metadata
+            dist_entry_points = dist.entry_points
+            for ep in dist_entry_points:
+                if ep.group == 'paste.paster_command':
+                    commands[ep.name] = ep
+        except (AttributeError, FileNotFoundError):
+            # If we can't read entry points from the distribution, skip it
+            pass
     return commands
 
 def parse_lines(data):
@@ -116,12 +129,22 @@ def parse_lines(data):
 
 def load_global_commands():
     commands = {}
-    for p in pkg_resources.iter_entry_points('paste.global_paster_command'):
+    eps = entry_points()
+    group = eps.select(group='paste.global_paster_command')
+    for p in group:
         commands[p.name] = p
     return commands
 
+def _safe_name(dist_name):
+    """Convert a distribution name to a filename-safe name."""
+    return re.sub('[^a-zA-Z0-9.]', '_', dist_name).lower()
+
+def _to_filename(name):
+    """Convert a name to a filename-safe format."""
+    return name.replace('-', '_').replace(' ', '_')
+
 def egg_name(dist_name):
-    return pkg_resources.to_filename(pkg_resources.safe_name(dist_name))
+    return _to_filename(_safe_name(dist_name))
 
 def egg_info_dir(base_dir, dist_name):
     all = []

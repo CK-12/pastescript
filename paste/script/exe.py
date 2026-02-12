@@ -4,7 +4,7 @@ import re
 import os
 import sys
 import shlex
-import pkg_resources
+from importlib.metadata import distribution, PackageNotFoundError
 from . import command
 
 class ExeCommand(command.Command):
@@ -93,7 +93,11 @@ Which translates to:
             name = name.strip()
             value = value.strip()
             if name == 'require':
-                pkg_resources.require(value)
+                try:
+                    distribution(value)
+                except PackageNotFoundError:
+                    raise command.BadCommand(
+                        'Required package not found: %s' % value)
             elif name == 'command' or name == 'add':
                 options.extend(shlex.split(value))
             elif name == 'plugin':

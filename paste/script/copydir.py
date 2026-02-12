@@ -1,13 +1,11 @@
 # (c) 2005 Ian Bicking and contributors; written for Paste (http://pythonpaste.org)
 # Licensed under the MIT license: http://www.opensource.org/licenses/mit-license.php
 import os
-import pkg_resources
-from urllib.parse import quote
+from importlib.resources import files
+from six.moves import input
+from six.moves.urllib.parse import quote
 import string
-try:
-    import html
-except ImportError:
-    import cgi as html
+import cgi
 
 Cheetah = None
 try:
@@ -21,6 +19,25 @@ class SkipTemplate(Exception):
     Raised to indicate that the template should not be copied over.
     Raise this exception during the substitution of your template
     """
+
+def _resource_isdir(package_name, resource_path):
+    """Check if a package resource path is a directory."""
+    try:
+        resource = files(package_name)
+        if resource_path:
+            for part in resource_path.split('/'):
+                resource = resource / part
+        return resource.is_dir()
+    except (FileNotFoundError, AttributeError):
+        return False
+
+def _resource_string(package_name, resource_path):
+    """Read a package resource as a string."""
+    resource = files(package_name)
+    if resource_path:
+        for part in resource_path.split('/'):
+            resource = resource / part
+    return resource.read_text(encoding='utf-8')
 
 def copy_dir(source, dest, vars, verbosity, simulate, indent=0,
              use_cheetah=False, sub_vars=True, interactive=False,
@@ -62,7 +79,14 @@ def copy_dir(source, dest, vars, verbosity, simulate, indent=0,
     vars.setdefault('plus', '+')
     use_pkg_resources = isinstance(source, tuple)
     if use_pkg_resources:
-        names = pkg_resources.resource_listdir(source[0], source[1])
+        # Use importlib.resources for package resources
+        package_name = source[0]
+        resource_path = source[1]
+        resource = files(package_name)
+        if resource_path:
+            for part in resource_path.split('/'):
+                resource = resource / part
+        names = [item.name for item in resource.iterdir()]
     else:
         names = os.listdir(source)
     names.sort()
@@ -77,7 +101,11 @@ def copy_dir(source, dest, vars, verbosity, simulate, indent=0,
         print('%sDirectory %s exists' % (pad, dest))
     for name in names:
         if use_pkg_resources:
-            full = '/'.join([source[1], name])
+            # Reconstruct resource path
+            if source[1]:
+                full = source[1] + '/' + name
+            else:
+                full = name
         else:
             full = os.path.join(source, name)
         reason = should_skip_file(name)
@@ -92,7 +120,7 @@ def copy_dir(source, dest, vars, verbosity, simulate, indent=0,
         if dest_full.endswith('_tmpl'):
             dest_full = dest_full[:-5]
             sub_file = sub_vars
-        if use_pkg_resources and pkg_resources.resource_isdir(source[0], full):
+        if use_pkg_resources and _resource_isdir(source[0], full):
             if verbosity:
                 print('%sRecursing into %s' % (pad, os.path.basename(full)))
             copy_dir((source[0], full), dest_full, vars, verbosity, simulate,
@@ -109,43 +137,41 @@ def copy_dir(source, dest, vars, verbosity, simulate, indent=0,
                      svn_add=svn_add, template_renderer=template_renderer)
             continue
         elif use_pkg_resources:
-            content = pkg_resources.resource_string(source[0], full)
-            content = content.encode()
+            content = _resource_string(source[0], full)
         else:
-            with open(full, 'rb') as f:
+            with open(full, 'r') as f:
                 content = f.read()
         if sub_file:
             try:
-                content = content.decode()
                 content = substitute_content(content, vars, filename=full,
                                              use_cheetah=use_cheetah,
                                              template_renderer=template_renderer)
-                content = content.encode()
             except SkipTemplate:
                 continue
             if content is None:
                 continue
         already_exists = os.path.exists(dest_full)
         if already_exists:
-            with open(dest_full, 'rb') as f:
-                old_content = f.read()
-                if old_content == content:
-                    if verbosity:
-                        print('%s%s already exists (same content)' % (pad, dest_full))
+            f = open(dest_full, 'rb')
+            old_content = f.read()
+            f.close()
+            if old_content == content:
+                if verbosity:
+                    print('%s%s already exists (same content)' % (pad, dest_full))
+                continue
+            if interactive:
+                if not query_interactive(
+                    full, dest_full, content, old_content,
+                    simulate=simulate):
                     continue
-                if interactive:
-                    if not query_interactive(
-                        full, dest_full, content.decode(), old_content.decode(),
-                        simulate=simulate):
-                        continue
-                elif not overwrite:
-                    continue
+            elif not overwrite:
+                continue
         if verbosity and use_pkg_resources:
             print('%sCopying %s to %s' % (pad, full, dest_full))
         elif verbosity:
             print('%sCopying %s to %s' % (pad, os.path.basename(full), dest_full))
         if not simulate:
-            with open(dest_full, 'wb') as f:
+            with open(dest_full, 'w') as f:
                 f.write(content)
         if svn_add and not already_exists:
             if os.system('svn info %r >/dev/null 2>&1' % os.path.dirname(os.path.abspath(dest_full))) > 0:
@@ -344,7 +370,7 @@ def sub_catcher(filename, vars, func, *args, **kw):
 def html_quote(s):
     if s is None:
         return ''
-    return html.escape(str(s), 1)
+    return cgi.escape(str(s), 1)
 
 def url_quote(s):
     if s is None:

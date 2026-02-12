@@ -1,15 +1,20 @@
 # (c) 2005 Ian Bicking and contributors; written for Paste (http://pythonpaste.org)
 # Licensed under the MIT license: http://www.opensource.org/licenses/mit-license.php
-import pkg_resources
 import sys
 import optparse
+try:
+    from importlib.metadata import distribution, PackageNotFoundError
+except ImportError:
+    # Python < 3.8 fallback
+    from importlib_metadata import distribution, PackageNotFoundError
 from . import bool_optparse
 import os
 import re
 import textwrap
 from . import pluginlib
-import configparser
+from six.moves import configparser
 import getpass
+from six.moves import input
 try:
     import subprocess
 except ImportError:
@@ -17,7 +22,12 @@ except ImportError:
 
 difflib = None
 
-from logging.config import fileConfig
+if sys.version_info >= (2, 6):
+    from logging.config import fileConfig
+else:
+    # Use our custom fileConfig -- 2.5.1's with a custom Formatter class
+    # and less strict whitespace (which were incorporated into 2.6's)
+    from paste.script.util.logging_config import fileConfig
 
 class BadCommand(Exception):
 
@@ -45,13 +55,19 @@ class BadCommand(Exception):
 class NoDefault(object):
     pass
 
-dist = pkg_resources.get_distribution('PasteScript')
+try:
+    dist = distribution('PasteScript')
+    dist_version = dist.version
+    dist_location = str(dist._path) if hasattr(dist, '_path') else 'unknown'
+except PackageNotFoundError:
+    dist_version = 'unknown'
+    dist_location = 'unknown'
 
 python_version = sys.version.splitlines()[0].strip()
 
 parser = optparse.OptionParser(add_help_option=False,
-                               version='%s from %s (python %s)'
-                               % (dist, dist.location, python_version),
+                               version='PasteScript %s from %s (python %s)'
+                               % (dist_version, dist_location, python_version),
                                usage='%prog [paster_options] COMMAND [command_options]')
 
 parser.add_option(
@@ -110,7 +126,6 @@ def parse_exe_file(config):
         paths = [os.path.abspath(os.path.join(os.path.dirname(config), p))
                  for p in paths]
         for path in paths:
-            pkg_resources.working_set.add_entry(path)
             sys.path.insert(0, path)
     args = [command_name, config] + options
     return args
@@ -123,7 +138,6 @@ def get_commands():
         base_dir = os.path.dirname(egg_info_dir)
         if base_dir not in sys.path:
             sys.path.insert(0, base_dir)
-            pkg_resources.working_set.add_entry(base_dir)
     plugins = pluginlib.resolve_plugins(plugins)
     commands = pluginlib.load_commands_from_plugins(plugins)
     commands.update(pluginlib.load_global_commands())
